@@ -1,6 +1,6 @@
 streamlit
-pandas
+pandas<2.0.0
 openpyxl
 xlsxwriter
-xlrd
+xlrd>=2.0.1
 xlwt
