@@ -13,7 +13,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# CSS Minimalista
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -29,7 +28,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🤖 BUKizador")
-st.caption("Generador de .XLS (97-2003) para BUK")
+st.caption("Generador de .XLS para BUK (Versión Corregida)")
 
 # --- LÓGICA CORE ---
 
@@ -38,6 +37,14 @@ def limpiar_texto(texto):
     texto = str(texto)
     texto = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
     return texto.upper().strip()
+
+def formatear_fecha_header(val):
+    """Fuerza cualquier fecha (Timestamp o string) a formato YYYY-MM-DD string."""
+    if pd.isna(val): return str(val)
+    if isinstance(val, pd.Timestamp):
+        return val.strftime('%Y-%m-%d')
+    # Si es string, intentamos limpiarlo (ej: "2026-01-01 00:00:00" -> "2026-01-01")
+    return str(val).split()[0].strip()
 
 def buscar_rut_inteligente(nombres_unicos, df_colaboradores):
     mapa_ruts = {}
@@ -83,7 +90,6 @@ def normalizar_horarios(serie):
     return res
 
 def cargar_plantilla_robusta(archivo):
-    """Detecta si es Excel real o CSV disfrazado."""
     try:
         return pd.read_excel(archivo)
     except:
@@ -102,53 +108,86 @@ with st.container():
     archivo_plantilla = col2.file_uploader("2. Plantilla BUK (.xls)", type=["xls", "xlsx", "csv"])
 
 if archivo_input and archivo_plantilla:
-    with st.spinner('Procesando a formato antiguo .XLS...'):
+    with st.spinner('Procesando datos y arreglando fechas...'):
         try:
-            # 1. PROCESAMIENTO
+            # 1. CARGA DE INPUT
             xls = pd.ExcelFile(archivo_input)
             df_turnos = pd.read_excel(xls, sheet_name='Turnos Formato Supervisor', header=2)
             df_base = pd.read_excel(xls, sheet_name='Base de Colaboradores')
             df_cods = pd.read_excel(xls, sheet_name='Codificación de Turnos')
 
+            # --- CORRECCIÓN 1: LIMPIEZA DE COLUMNAS BASE (El problema del Área) ---
+            # Quitamos espacios al principio y final de los nombres de columna
+            df_base.columns = [c.strip() for c in df_base.columns]
+            
+            # --- CORRECCIÓN 2: NORMALIZACIÓN DE FECHAS INPUT ---
             col_nom = df_turnos.columns[0]
+            # Renombramos las columnas de fecha a formato estricto 'YYYY-MM-DD'
+            new_cols = []
+            for c in df_turnos.columns:
+                if c == col_nom:
+                    new_cols.append(c)
+                else:
+                    new_cols.append(formatear_fecha_header(c))
+            df_turnos.columns = new_cols
+
+            # Melt
             cols_fechas = [c for c in df_turnos.columns if c != col_nom]
             df_long = df_turnos.melt(id_vars=[col_nom], value_vars=cols_fechas, var_name='Fecha', value_name='Turno_Raw')
             df_long = df_long.dropna(subset=[col_nom])
 
+            # Rut y Datos
             mapa = buscar_rut_inteligente(df_long[col_nom].unique(), df_base)
             df_long['RUT'] = df_long[col_nom].map(mapa)
             
+            # Normalización Horarios
             df_long['Turno_Norm'] = normalizar_horarios(df_long['Turno_Raw'])
             df_cods['Horario_Norm'] = normalizar_horarios(df_cods['Horario'])
             dic_turnos = dict(zip(df_cods['Horario_Norm'], df_cods['Sigla']))
             dic_turnos['L'] = 'L'
             df_long['Sigla'] = df_long['Turno_Norm'].map(dic_turnos)
             
+            # Pivot (Clave: RUT, Cols: Fechas YYYY-MM-DD)
             df_pivot = df_long.pivot(index='RUT', columns='Fecha', values='Sigla')
 
-            # 2. INYECCIÓN
+            # 2. CARGA DE PLANTILLA
             df_template = cargar_plantilla_robusta(archivo_plantilla)
-            cols_template = df_template.columns.tolist()
+            cols_template_original = df_template.columns.tolist()
             
             filas_nuevas = []
             ruts_validos = [r for r in df_long['RUT'].unique() if "ERROR" not in str(r)]
 
             for rut in ruts_validos:
                 fila = {}
-                info_colab = df_base[df_base['RUT'] == rut].iloc[0] if not df_base[df_base['RUT'] == rut].empty else {}
+                # Buscamos datos maestros. Usamos dropna para evitar filas vacías fantasma
+                datos_maestros = df_base[df_base['RUT'] == rut]
+                if not datos_maestros.empty:
+                    info_colab = datos_maestros.iloc[0]
+                else:
+                    info_colab = pd.Series()
                 
-                for col in cols_template:
-                    col_u = col.upper()
+                for col in cols_template_original:
+                    col_u = str(col).upper().strip()
+                    
+                    # --- CORRECCIÓN 3: MATCHING DE FECHAS ---
+                    # Convertimos la columna de la plantilla a formato YYYY-MM-DD para comparar
+                    col_fecha_norm = formatear_fecha_header(col)
+                    
                     if 'RUT' in col_u or 'EMPLEADO' in col_u:
                         fila[col] = rut
-                    elif col in df_pivot.columns: 
-                        val = df_pivot.loc[rut, col]
+                    
+                    # AQUÍ ESTÁ LA MAGIA: Comparamos fecha normalizada con fecha normalizada
+                    elif col_fecha_norm in df_pivot.columns:
+                        val = df_pivot.loc[rut, col_fecha_norm]
                         fila[col] = val if pd.notna(val) else ""
-                    elif 'NOMBRE' in col_u and not info_colab.empty:
+                    
+                    # Llenado de Datos Maestros
+                    elif ('NOMBRE' in col_u or 'NAME' in col_u) and not info_colab.empty:
                         fila[col] = info_colab.get('Nombre del Colaborador', '')
-                    elif 'AREA' in col_u and not info_colab.empty:
-                        fila[col] = info_colab.get('Área', '')
-                    elif 'SUPERVISOR' in col_u and not info_colab.empty:
+                    elif ('AREA' in col_u or 'ÁREA' in col_u) and not info_colab.empty:
+                        # Intentamos con tilde y sin tilde por si acaso
+                        fila[col] = info_colab.get('Área', info_colab.get('Area', ''))
+                    elif ('SUPERVISOR' in col_u) and not info_colab.empty:
                         fila[col] = info_colab.get('Supervisor', '')
                     else:
                         fila[col] = ""
@@ -156,27 +195,29 @@ if archivo_input and archivo_plantilla:
                 filas_nuevas.append(fila)
             
             df_final = pd.DataFrame(filas_nuevas)
-            df_final = df_final[cols_template]
+            # Asegurar orden exacto
+            df_final = df_final[cols_template_original]
 
             # 3. GUARDADO .XLS
             output = io.BytesIO()
-            # IMPORTANTE: Aquí es donde fallaba si pandas era muy nuevo
             df_final.to_excel(output, index=False, engine='xlwt')
             
-            st.success(f"✅ ¡Listo! Archivo .xls (Legacy) generado.")
+            st.success(f"✅ ¡Reparado! Se procesaron {len(df_final)} colaboradores correctamente.")
             
             st.download_button(
-                label="📥 Descargar Output (.xls)",
+                label="📥 Descargar Output Corregido (.xls)",
                 data=output.getvalue(),
-                file_name="Carga_BUK.xls",
+                file_name="Carga_BUK_Corregida.xls",
                 mime="application/vnd.ms-excel",
                 use_container_width=True
             )
 
         except ImportError as e:
-            st.error("Error de Versión de Librerías")
-            st.warning("El servidor instaló una versión de Pandas demasiado nueva que no soporta .xls. Asegúrate de poner 'pandas<2.0.0' en requirements.txt")
-            st.code(e)
-            
+            st.error("Error de configuración de librerías (requirements.txt).")
         except Exception as e:
             st.error(f"Error Técnico: {e}")
+            st.write("Detalles para debugging:")
+            st.write(e)
+
+else:
+    st.info("Sube los archivos para procesar.")
