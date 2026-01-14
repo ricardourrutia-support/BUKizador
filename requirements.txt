@@ -1,5 +1,6 @@
 streamlit
 pandas<2.0.0
+numpy<2.0.0
 openpyxl
 xlsxwriter
 xlrd>=2.0.1
