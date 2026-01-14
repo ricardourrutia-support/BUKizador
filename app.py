@@ -104,7 +104,7 @@ with st.container():
 if archivo_input and archivo_plantilla:
     with st.spinner('Procesando a formato antiguo .XLS...'):
         try:
-            # 1. PROCESAMIENTO DE DATOS
+            # 1. PROCESAMIENTO
             xls = pd.ExcelFile(archivo_input)
             df_turnos = pd.read_excel(xls, sheet_name='Turnos Formato Supervisor', header=2)
             df_base = pd.read_excel(xls, sheet_name='Base de Colaboradores')
@@ -126,7 +126,7 @@ if archivo_input and archivo_plantilla:
             
             df_pivot = df_long.pivot(index='RUT', columns='Fecha', values='Sigla')
 
-            # 2. INYECCIÓN EN PLANTILLA
+            # 2. INYECCIÓN
             df_template = cargar_plantilla_robusta(archivo_plantilla)
             cols_template = df_template.columns.tolist()
             
@@ -158,36 +158,25 @@ if archivo_input and archivo_plantilla:
             df_final = pd.DataFrame(filas_nuevas)
             df_final = df_final[cols_template]
 
-            # 3. GUARDADO EN .XLS (Excel 97-2003)
-            # Usamos io.BytesIO y el motor 'xlwt' explícitamente
+            # 3. GUARDADO .XLS
             output = io.BytesIO()
-            # engine='xlwt' es la clave para .xls antiguo
+            # IMPORTANTE: Aquí es donde fallaba si pandas era muy nuevo
             df_final.to_excel(output, index=False, engine='xlwt')
             
-            st.success(f"✅ ¡Listo! Archivo .xls generado correctamente.")
+            st.success(f"✅ ¡Listo! Archivo .xls (Legacy) generado.")
             
             st.download_button(
-                label="📥 Descargar BUKizador Output (.xls)",
+                label="📥 Descargar Output (.xls)",
                 data=output.getvalue(),
-                file_name="Carga_Masiva_BUK_Final.xls",
+                file_name="Carga_BUK.xls",
                 mime="application/vnd.ms-excel",
                 use_container_width=True
             )
+
+        except ImportError as e:
+            st.error("Error de Versión de Librerías")
+            st.warning("El servidor instaló una versión de Pandas demasiado nueva que no soporta .xls. Asegúrate de poner 'pandas<2.0.0' en requirements.txt")
+            st.code(e)
             
-            errores = df_long[df_long['Sigla'].isna()]['Turno_Norm'].unique()
-            if len(errores) > 0:
-                with st.expander("⚠️ Ver turnos no reconocidos"):
-                    st.write(errores)
-
         except Exception as e:
-            st.error("Error técnico al generar el Excel.")
-            st.code(f"{e}")
-            st.info("Asegúrate de que 'xlwt' esté en requirements.txt")
-
-else:
-    st.markdown("""
-    <div style="text-align: center; color: #95a5a6; padding: 50px;">
-        <h3>Esperando inputs...</h3>
-        <p>Sube tus archivos para generar el .xls antiguo.</p>
-    </div>
-    """, unsafe_allow_html=True)
+            st.error(f"Error Técnico: {e}")
