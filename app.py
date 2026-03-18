@@ -31,6 +31,8 @@ if 'df_long_cache' not in st.session_state:
     st.session_state.df_long_cache = None
 if 'df_base_cache' not in st.session_state:
     st.session_state.df_base_cache = None
+if 'df_template_cache' not in st.session_state:
+    st.session_state.df_template_cache = None
 if 'nombres_pendientes' not in st.session_state:
     st.session_state.nombres_pendientes = []
 
@@ -78,11 +80,6 @@ def cargar_plantilla_robusta(archivo):
 # --- LOGICA DE COINCIDENCIA ---
 
 def analizar_nombres(nombres_unicos, df_colab):
-    """
-    Retorna:
-    1. mapa_seguro: {NombreInput: RUT} (Coincidencias 100% seguras)
-    2. pendientes: [NombreInput] (Los que no cruzaron y necesitan ayuda humana)
-    """
     mapa_seguro = {}
     pendientes = []
     
@@ -103,7 +100,6 @@ def analizar_nombres(nombres_unicos, df_colab):
         if len(matches) == 1:
             mapa_seguro[nombre] = rut_lookup[matches[0]]
         else:
-            # Si hay dudas o no existe, va a pendientes
             pendientes.append(nombre)
             
     return mapa_seguro, pendientes
@@ -114,36 +110,51 @@ st.info("💡 Sube tus archivos. Si hay nombres mal escritos, la app te pedirá 
 
 col1, col2 = st.columns(2)
 archivo_input = col1.file_uploader("1. Excel Supervisores", type=["xlsx"], key="input")
-archivo_plantilla = col2.file_uploader("2. Plantilla BUK", type=["xls", "xlsx", "csv"], key="plantilla")
+archivo_plantilla = col2.file_uploader("2. Plantilla BUK (Importador Actualizado)", type=["xls", "xlsx", "csv"], key="plantilla")
 
 # Botón de reinicio si se cargan nuevos archivos
 if archivo_input and archivo_plantilla and st.session_state.etapa == 'carga':
     if st.button("🔍 Analizar y Buscar Coincidencias"):
         with st.spinner("Leyendo datos..."):
             try:
-                # Carga inicial
+                # 1. Cargar datos del Excel de Supervisores (omitimos Base de Colaboradores)
                 xls = pd.ExcelFile(archivo_input)
                 df_turnos = pd.read_excel(xls, sheet_name='Turnos Formato Supervisor', header=2)
-                df_base = pd.read_excel(xls, sheet_name='Base de Colaboradores')
                 df_cods = pd.read_excel(xls, sheet_name='Codificación de Turnos')
                 
-                # Pre-procesamiento
+                # 2. Cargar Plantilla BUK para usarla como la nueva Base de Colaboradores
+                df_template = cargar_plantilla_robusta(archivo_plantilla)
+                
+                # Buscar dinámicamente las columnas de RUT y Nombre en el importador
+                col_rut = next((c for c in df_template.columns if 'RUT' in str(c).upper() or 'EMPLEADO' in str(c).upper() or 'IDENTIFICADOR' in str(c).upper()), None)
+                col_nom = next((c for c in df_template.columns if 'NOMBRE' in str(c).upper() or 'NAME' in str(c).upper()), None)
+                
+                if not col_rut or not col_nom:
+                    st.error("No se encontraron las columnas de RUT/Empleado o Nombre en la plantilla BUK. Verifica el archivo.")
+                    st.stop()
+                
+                # Transformar el template en el df_base esperado por el resto del código
+                df_base = df_template.copy()
+                df_base = df_base.rename(columns={col_rut: 'RUT', col_nom: 'Nombre del Colaborador'})
+                df_base = df_base.dropna(subset=['RUT']).drop_duplicates(subset=['RUT'])
                 df_base.columns = [str(c).strip() for c in df_base.columns]
-                col_nom = df_turnos.columns[0]
+                
+                # Pre-procesamiento de turnos
+                col_nom_input = df_turnos.columns[0]
                 
                 # Normalizar fechas columnas
                 mapa_cols_fechas = {}
                 cols_fechas_originales = []
                 for c in df_turnos.columns:
-                    if c != col_nom:
+                    if c != col_nom_input:
                         fn = normalizar_fecha_universal(c)
                         if fn:
                             mapa_cols_fechas[c] = fn
                             cols_fechas_originales.append(c)
                 
                 # Melt
-                df_long = df_turnos.melt(id_vars=[col_nom], value_vars=cols_fechas_originales, var_name='Fecha_Original', value_name='Turno_Raw')
-                df_long = df_long.dropna(subset=[col_nom])
+                df_long = df_turnos.melt(id_vars=[col_nom_input], value_vars=cols_fechas_originales, var_name='Fecha_Original', value_name='Turno_Raw')
+                df_long = df_long.dropna(subset=[col_nom_input])
                 df_long['Fecha_Norm'] = df_long['Fecha_Original'].map(mapa_cols_fechas)
                 
                 # Procesar Horarios una sola vez
@@ -153,16 +164,17 @@ if archivo_input and archivo_plantilla and st.session_state.etapa == 'carga':
                 dic_turnos['L'] = 'L'
                 df_long['Sigla'] = df_long['Turno_Norm'].map(dic_turnos)
 
-                # ANÁLISIS DE NOMBRES
-                nombres_unicos = df_long[col_nom].unique()
+                # ANÁLISIS DE NOMBRES cruzando contra la nueva base sacada de BUK
+                nombres_unicos = df_long[col_nom_input].unique()
                 mapa_seguro, pendientes = analizar_nombres(nombres_unicos, df_base)
                 
                 # Guardar en sesión
+                st.session_state.df_template_cache = df_template # Guardamos el template para Fase 3
                 st.session_state.df_long_cache = df_long
                 st.session_state.df_base_cache = df_base
-                st.session_state.mapa_manual = mapa_seguro # Iniciamos con los seguros
+                st.session_state.mapa_manual = mapa_seguro 
                 st.session_state.nombres_pendientes = pendientes
-                st.session_state.col_nom_input = col_nom # Nombre columna input
+                st.session_state.col_nom_input = col_nom_input 
                 
                 st.session_state.etapa = 'correccion' # Avanzar etapa
                 st.rerun() # Recargar pantalla
@@ -177,8 +189,6 @@ if st.session_state.etapa == 'correccion':
     pendientes = st.session_state.nombres_pendientes
     df_base = st.session_state.df_base_cache
     
-    # Preparar lista de opciones para el Combobox
-    # Formato: "NOMBRE REAL (RUT)"
     df_base['Opcion_Display'] = df_base['Nombre del Colaborador'].astype(str) + " (" + df_base['RUT'].astype(str) + ")"
     opciones_base = df_base['Opcion_Display'].tolist()
     opciones_base.sort()
@@ -189,20 +199,16 @@ if st.session_state.etapa == 'correccion':
         with st.form("form_correcciones"):
             st.write("### 🛠️ Panel de Corrección")
             
-            # Diccionario temporal para guardar selecciones del form
             nuevas_correcciones = {}
-            
             col_form1, col_form2 = st.columns([1, 2])
             
             for i, mal_nombre in enumerate(pendientes):
-                # Intentar sugerir el más parecido por defecto
                 n_clean = limpiar_texto(mal_nombre)
                 lista_nombres_clean = df_base['Nombre del Colaborador'].apply(limpiar_texto).tolist()
                 sugerencia_idx = 0
                 
                 posibles = difflib.get_close_matches(n_clean, lista_nombres_clean, n=1, cutoff=0.4)
                 if posibles:
-                    # Buscar el índice de esa sugerencia en la lista de opciones
                     nombre_real_sugerido = df_base[df_base['Nombre del Colaborador'].apply(limpiar_texto) == posibles[0]].iloc[0]['Opcion_Display']
                     try:
                         sugerencia_idx = opciones_base.index(nombre_real_sugerido)
@@ -218,14 +224,12 @@ if st.session_state.etapa == 'correccion':
                 )
                 st.markdown("---")
                 
-                # Extraer RUT de la selección "NOMBRE (RUT)"
                 rut_elegido = seleccion.split("(")[-1].replace(")", "").strip()
                 nuevas_correcciones[mal_nombre] = rut_elegido
 
             confirmar = st.form_submit_button("✅ Confirmar Correcciones y Generar")
             
             if confirmar:
-                # Unir mapas
                 st.session_state.mapa_manual.update(nuevas_correcciones)
                 st.session_state.etapa = 'descarga'
                 st.rerun()
@@ -241,20 +245,16 @@ if st.session_state.etapa == 'descarga':
     st.write("### 🚀 Generando Archivo Final...")
     
     try:
-        # Recuperar datos de memoria
         df_long = st.session_state.df_long_cache
         df_base = st.session_state.df_base_cache
         mapa_final = st.session_state.mapa_manual
         col_nom = st.session_state.col_nom_input
         
-        # APLICAR MAPA CORREGIDO
         df_long['RUT'] = df_long[col_nom].map(mapa_final)
-        
-        # PIVOTE FINAL
         df_pivot = df_long.pivot(index='RUT', columns='Fecha_Norm', values='Sigla')
         
-        # LLENAR PLANTILLA
-        df_template = cargar_plantilla_robusta(archivo_plantilla)
+        # Recuperamos la plantilla directamente desde la memoria (ya no leemos el archivo de nuevo)
+        df_template = st.session_state.df_template_cache
         cols_template = df_template.columns.tolist()
         
         filas_nuevas = []
@@ -264,7 +264,6 @@ if st.session_state.etapa == 'descarga':
             if pd.isna(rut): continue
             
             fila = {}
-            # Buscar datos maestros usando el RUT corregido
             datos_maestros = df_base[df_base['RUT'] == rut]
             info_colab = datos_maestros.iloc[0] if not datos_maestros.empty else pd.Series()
             
@@ -288,9 +287,8 @@ if st.session_state.etapa == 'descarga':
             filas_nuevas.append(fila)
             
         df_final = pd.DataFrame(filas_nuevas)
-        df_final = df_final[cols_template] # Orden estricto
+        df_final = df_final[cols_template] 
         
-        # EXPORTAR
         output = io.BytesIO()
         df_final.to_excel(output, index=False, engine='xlwt')
         
