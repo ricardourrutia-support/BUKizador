@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import unicodedata
 import difflib
+import re
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="BUKizador Interactivo", page_icon="🤖", layout="centered")
@@ -35,6 +36,8 @@ if 'df_template_cache' not in st.session_state:
     st.session_state.df_template_cache = None
 if 'nombres_pendientes' not in st.session_state:
     st.session_state.nombres_pendientes = []
+if 'turnos_problematicos' not in st.session_state:
+    st.session_state.turnos_problematicos = []
 
 # --- FUNCIONES ---
 
@@ -56,16 +59,40 @@ def normalizar_fecha_universal(valor):
 def normalizar_horarios(serie):
     s = serie.astype(str).str.upper().str.strip()
     res = pd.Series(index=s.index, dtype='object')
-    mask_libre = s.str.contains('LIBRE', na=False) | s.isna() | (s == 'NAN')
+    
+    # Manejar Libres o Vacíos
+    mask_libre = s.str.contains('LIBRE', na=False) | s.isna() | (s == 'NAN') | (s == '')
     res[mask_libre] = 'L'
-    patron = r"(\d{1,2}):(\d{2})"
+    
     s_proc = s[~mask_libre]
     if s_proc.empty: return res
-    extracted = s_proc.str.findall(patron)
-    def formatear(match):
-        if not isinstance(match, list) or len(match) < 2: return "ERROR_FORMATO"
-        return f"{int(match[0][0]):02d}:{match[0][1]}-{int(match[-1][0]):02d}:{match[-1][1]}"
-    res[~mask_libre] = extracted.apply(formatear)
+    
+    def extraer_formato(texto):
+        # Normalizar separadores (por si escriben "05:00 a 16:00")
+        texto_sep = re.sub(r'\s+A\s+|\s+AL\s+', '-', texto)
+        partes = texto_sep.split('-')
+        
+        if len(partes) >= 2:
+            # Extraer todos los números de la parte inicio y la parte fin
+            nums_ini = re.findall(r'\d+', partes[0])
+            nums_fin = re.findall(r'\d+', partes[-1])
+            
+            # Si logró extraer hora y minuto de ambos lados
+            if len(nums_ini) >= 2 and len(nums_fin) >= 2:
+                h_ini, m_ini = int(nums_ini[0]), nums_ini[1]
+                h_fin, m_fin = int(nums_fin[0]), nums_fin[1]
+                # Retorna formato estricto: HH:MM-HH:MM (ignora los segundos)
+                return f"{h_ini:02d}:{m_ini}-{h_fin:02d}:{m_fin}"
+        
+        # Fallback de seguridad al regex antiguo
+        patron = r"(\d{1,2}):(\d{2})"
+        matches = re.findall(patron, texto)
+        if len(matches) >= 2:
+            return f"{int(matches[0][0]):02d}:{matches[0][1]}-{int(matches[-1][0]):02d}:{matches[-1][1]}"
+            
+        return texto.strip()
+
+    res[~mask_libre] = s_proc.apply(extraer_formato)
     return res
 
 def cargar_plantilla_robusta(archivo):
@@ -76,8 +103,6 @@ def cargar_plantilla_robusta(archivo):
         except: 
             archivo.seek(0)
             return pd.read_csv(archivo, sep=',', engine='python')
-
-# --- LOGICA DE COINCIDENCIA ---
 
 def analizar_nombres(nombres_unicos, df_colab):
     mapa_seguro = {}
@@ -112,7 +137,6 @@ col1, col2 = st.columns(2)
 archivo_input = col1.file_uploader("1. Excel Supervisores", type=["xlsx"], key="input")
 archivo_plantilla = col2.file_uploader("2. Plantilla BUK (Importador Actualizado)", type=["xls", "xlsx", "csv"], key="plantilla")
 
-# Botón de reinicio si se cargan nuevos archivos
 if archivo_input and archivo_plantilla and st.session_state.etapa == 'carga':
     if st.button("🔍 Analizar y Buscar Coincidencias"):
         with st.spinner("Leyendo datos..."):
@@ -133,7 +157,6 @@ if archivo_input and archivo_plantilla and st.session_state.etapa == 'carga':
                     st.error("No se encontraron las columnas de RUT/Empleado o Nombre en la plantilla BUK. Verifica el archivo.")
                     st.stop()
                 
-                # Transformar el template en el df_base esperado por el resto del código
                 df_base = df_template.copy()
                 df_base = df_base.rename(columns={col_rut: 'RUT', col_nom: 'Nombre del Colaborador'})
                 df_base = df_base.dropna(subset=['RUT']).drop_duplicates(subset=['RUT'])
@@ -142,7 +165,6 @@ if archivo_input and archivo_plantilla and st.session_state.etapa == 'carga':
                 # Pre-procesamiento de turnos
                 col_nom_input = df_turnos.columns[0]
                 
-                # Normalizar fechas columnas
                 mapa_cols_fechas = {}
                 cols_fechas_originales = []
                 for c in df_turnos.columns:
@@ -152,32 +174,41 @@ if archivo_input and archivo_plantilla and st.session_state.etapa == 'carga':
                             mapa_cols_fechas[c] = fn
                             cols_fechas_originales.append(c)
                 
-                # Melt
                 df_long = df_turnos.melt(id_vars=[col_nom_input], value_vars=cols_fechas_originales, var_name='Fecha_Original', value_name='Turno_Raw')
                 df_long = df_long.dropna(subset=[col_nom_input])
                 df_long['Fecha_Norm'] = df_long['Fecha_Original'].map(mapa_cols_fechas)
                 
-                # Procesar Horarios una sola vez
+                # Procesar Horarios con el motor nuevo
                 df_long['Turno_Norm'] = normalizar_horarios(df_long['Turno_Raw'])
                 df_cods['Horario_Norm'] = normalizar_horarios(df_cods['Horario'])
+                
                 dic_turnos = dict(zip(df_cods['Horario_Norm'], df_cods['Sigla']))
                 dic_turnos['L'] = 'L'
+                
                 df_long['Sigla'] = df_long['Turno_Norm'].map(dic_turnos)
+                
+                # Detectar qué turnos no cruzaron
+                turnos_nulos = df_long['Sigla'].isna()
+                if turnos_nulos.any():
+                    st.session_state.turnos_problematicos = df_long.loc[turnos_nulos, 'Turno_Raw'].dropna().unique().tolist()
+                    df_long.loc[turnos_nulos, 'Sigla'] = df_long.loc[turnos_nulos, 'Turno_Raw'].astype(str).str.upper().str.strip()
+                else:
+                    st.session_state.turnos_problematicos = []
 
-                # ANÁLISIS DE NOMBRES cruzando contra la nueva base sacada de BUK
+                # ANÁLISIS DE NOMBRES
                 nombres_unicos = df_long[col_nom_input].unique()
                 mapa_seguro, pendientes = analizar_nombres(nombres_unicos, df_base)
                 
                 # Guardar en sesión
-                st.session_state.df_template_cache = df_template # Guardamos el template para Fase 3
+                st.session_state.df_template_cache = df_template 
                 st.session_state.df_long_cache = df_long
                 st.session_state.df_base_cache = df_base
                 st.session_state.mapa_manual = mapa_seguro 
                 st.session_state.nombres_pendientes = pendientes
                 st.session_state.col_nom_input = col_nom_input 
                 
-                st.session_state.etapa = 'correccion' # Avanzar etapa
-                st.rerun() # Recargar pantalla
+                st.session_state.etapa = 'correccion'
+                st.rerun()
 
             except Exception as e:
                 st.error(f"Error al leer archivos: {e}")
@@ -186,6 +217,13 @@ if archivo_input and archivo_plantilla and st.session_state.etapa == 'carga':
 if st.session_state.etapa == 'correccion':
     
     st.divider()
+    
+    # --- NUEVA ALERTA DE TURNOS ---
+    if getattr(st.session_state, 'turnos_problematicos', []):
+        st.error(f"🚨 **ALERTA DE TURNOS NO RECONOCIDOS:** Se detectaron formatos de turno ingresados por supervisores que **no existen** en la hoja de 'Codificación de Turnos'. Se descargarán tal cual, pero es muy probable que **BUK los rechace**.")
+        st.write("Lista de turnos problemáticos encontrados:", st.session_state.turnos_problematicos)
+        st.markdown("---")
+        
     pendientes = st.session_state.nombres_pendientes
     df_base = st.session_state.df_base_cache
     
@@ -253,7 +291,6 @@ if st.session_state.etapa == 'descarga':
         df_long['RUT'] = df_long[col_nom].map(mapa_final)
         df_pivot = df_long.pivot(index='RUT', columns='Fecha_Norm', values='Sigla')
         
-        # Recuperamos la plantilla directamente desde la memoria (ya no leemos el archivo de nuevo)
         df_template = st.session_state.df_template_cache
         cols_template = df_template.columns.tolist()
         
