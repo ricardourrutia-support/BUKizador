@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import os
 import re
 import unicodedata
 import difflib
@@ -12,6 +13,7 @@ st.set_page_config(page_title="BUKizador v3", page_icon="✈️", layout="center
 st.markdown("""
     <style>
     .stApp {background-color: #FAFAFA;}
+    .block-container {padding-top: 1rem !important;}
     h1 {color: #1a1a2e;}
     .stButton>button {width: 100%; border-radius: 8px; font-weight: 600;}
     .match-ok {color: #27ae60; font-weight: bold;}
@@ -21,8 +23,13 @@ st.markdown("""
         background-color: #ffffff; padding: 20px; border-radius: 10px;
         border: 1px solid #ddd; box-shadow: 0 2px 5px rgba(0,0,0,0.05);
     }
+    div[data-testid="stImage"] img {border-radius: 12px;}
     </style>
 """, unsafe_allow_html=True)
+
+# --- HEADER ---
+if os.path.exists("header.png"):
+    st.image("header.png", use_container_width=True)
 
 st.title("✈️ BUKizador v3")
 st.caption("Input 1: Turnos 360 (supervisores) · Input 2: Importador BUK (.xls)")
