@@ -5,10 +5,10 @@ import re
 import unicodedata
 import difflib
 import datetime
- 
+
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="BUKizador v3", page_icon="✈️", layout="centered")
- 
+
 st.markdown("""
     <style>
     .stApp {background-color: #FAFAFA;}
@@ -23,14 +23,14 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
- 
+
 st.title("✈️ BUKizador v3")
 st.caption("Input 1: Turnos 360 (supervisores) · Input 2: Importador BUK (.xls)")
- 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FUNCIONES AUXILIARES
 # ═══════════════════════════════════════════════════════════════════════════════
- 
+
 def limpiar_texto(texto):
     """Normaliza texto: quita acentos, mayúsculas, espacios extra."""
     if pd.isna(texto) or texto is None:
@@ -38,8 +38,8 @@ def limpiar_texto(texto):
     texto = str(texto).strip()
     texto = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
     return texto.upper().strip()
- 
- 
+
+
 def normalizar_hora(texto):
     """
     Convierte cualquier formato de hora a 'HH:MM' estándar.
@@ -61,8 +61,8 @@ def normalizar_hora(texto):
     if match:
         return f"{int(match.group(1)):02d}:00"
     return None
- 
- 
+
+
 def extraer_rango_horario(texto):
     """
     Extrae (entrada, salida) de un texto como '08:00 - 19:00' o '09:00-20:00'.
@@ -96,8 +96,8 @@ def extraer_rango_horario(texto):
     
     # Un solo HH:MM no es un rango válido
     return None
- 
- 
+
+
 def detectar_fila_fechas(df):
     """Encuentra la fila que contiene fechas (datetime) en el DataFrame."""
     for i in range(min(10, len(df))):
@@ -109,8 +109,8 @@ def detectar_fila_fechas(df):
         if count_dates >= 5:  # al menos 5 fechas
             return i
     return None
- 
- 
+
+
 def parsear_hoja_turnos(df, nombre_hoja):
     """
     Parsea una hoja de turnos del formato 360.
@@ -176,8 +176,8 @@ def parsear_hoja_turnos(df, nombre_hoja):
             })
     
     return pd.DataFrame(registros)
- 
- 
+
+
 def construir_mapa_siglas(df_turnos_semanales):
     """
     Construye un diccionario: (entrada, salida, rol) → sigla
@@ -226,8 +226,8 @@ def construir_mapa_siglas(df_turnos_semanales):
                 mapa[key] = sigla
     
     return mapa
- 
- 
+
+
 def turno_a_sigla(turno_raw, rol, mapa_siglas):
     """Convierte un turno en texto humano a su sigla BUK."""
     rango = extraer_rango_horario(turno_raw)
@@ -236,7 +236,7 @@ def turno_a_sigla(turno_raw, rol, mapa_siglas):
         return None  # Celda vacía o no parseable
     
     if rango == ('LIBRE', 'LIBRE'):
-        return 'D'  # Descanso
+        return 'L'  # Libre
     
     entrada, salida = rango
     
@@ -263,8 +263,8 @@ def turno_a_sigla(turno_raw, rol, mapa_siglas):
                 return sigla
     
     return None  # No encontrado
- 
- 
+
+
 def matching_nombres(nombres_input, nombres_buk):
     """
     Hace matching inteligente entre nombres cortos (input) y nombres completos (BUK).
@@ -303,12 +303,12 @@ def matching_nombres(nombres_input, nombres_buk):
                 pendientes.append(nombre)
     
     return mapa_seguro, pendientes
- 
- 
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ESTADO DE SESIÓN
 # ═══════════════════════════════════════════════════════════════════════════════
- 
+
 if 'etapa' not in st.session_state:
     st.session_state.etapa = 'carga'
 if 'df_all_turnos' not in st.session_state:
@@ -331,17 +331,17 @@ if 'hojas_mes' not in st.session_state:
     st.session_state.hojas_mes = []
 if 'turnos_no_encontrados' not in st.session_state:
     st.session_state.turnos_no_encontrados = []
- 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FASE 1: CARGA DE ARCHIVOS
 # ═══════════════════════════════════════════════════════════════════════════════
- 
+
 st.info("💡 Sube los 2 archivos: el Excel de turnos (formato 360) y el importador BUK (.xls)")
- 
+
 col1, col2 = st.columns(2)
 archivo_360 = col1.file_uploader("📋 Turnos 360 (supervisores)", type=["xlsx"], key="input360")
 archivo_buk = col2.file_uploader("📦 Importador BUK", type=["xls", "xlsx"], key="inputbuk")
- 
+
 if archivo_360 and archivo_buk and st.session_state.etapa == 'carga':
     
     # Detectar meses disponibles
@@ -439,12 +439,12 @@ if archivo_360 and archivo_buk and st.session_state.etapa == 'carga':
         st.error(f"Error al leer archivos: {e}")
         import traceback
         st.code(traceback.format_exc())
- 
- 
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FASE 2: CORRECCIÓN DE NOMBRES
 # ═══════════════════════════════════════════════════════════════════════════════
- 
+
 if st.session_state.etapa == 'correccion':
     st.divider()
     
@@ -506,12 +506,12 @@ if st.session_state.etapa == 'correccion':
         if st.button("▶️ Continuar a Generar Archivo", type="primary"):
             st.session_state.etapa = 'descarga'
             st.rerun()
- 
- 
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FASE 3: GENERACIÓN Y DESCARGA
 # ═══════════════════════════════════════════════════════════════════════════════
- 
+
 if st.session_state.etapa == 'descarga':
     st.divider()
     st.write("### 🚀 Generando Archivo Final...")
@@ -568,20 +568,38 @@ if st.session_state.etapa == 'descarga':
         # Para cada RUT en el BUK, llenar las columnas de fecha con la sigla correspondiente
         df_output = df_buk.copy()
         
+        # Determinar cuál es la última fecha del importador (para el truco de D final)
+        fechas_iso_ordenadas = sorted(fechas_buk.keys())
+        ultima_fecha_iso = fechas_iso_ordenadas[-1] if fechas_iso_ordenadas else None
+        ultima_col_buk = fechas_buk.get(ultima_fecha_iso) if ultima_fecha_iso else None
+        
         for idx, row_buk in df_output.iterrows():
             rut = row_buk['RUT']
             # Buscar turnos de este colaborador
             turnos_colab = df_con_match[df_con_match['RUT'] == rut]
             
-            if turnos_colab.empty:
-                continue
-            
             for fecha_iso, col_buk in fechas_buk.items():
+                # Último día del importador → siempre D (truco de configuración BUK)
+                if col_buk == ultima_col_buk:
+                    df_output.at[idx, col_buk] = 'D'
+                    continue
+                
+                if turnos_colab.empty:
+                    # Sin datos del 360 para este colaborador → L (Libre)
+                    df_output.at[idx, col_buk] = 'L'
+                    continue
+                
                 turno_dia = turnos_colab[turnos_colab['Fecha'] == fecha_iso]
                 if not turno_dia.empty:
                     sigla = turno_dia.iloc[0]['Sigla']
                     if sigla is not None:
                         df_output.at[idx, col_buk] = sigla
+                    else:
+                        # Celda vacía en el input 360 → L
+                        df_output.at[idx, col_buk] = 'L'
+                else:
+                    # Fecha existe en BUK pero no en el 360 → L
+                    df_output.at[idx, col_buk] = 'L'
         
         # ── Mostrar Preview ──
         st.subheader("Vista Previa")
@@ -594,6 +612,9 @@ if st.session_state.etapa == 'descarga':
         st.dataframe(df_output[cols_existentes].head(15), use_container_width=True)
         
         # ── Alertas ──
+        if ultima_col_buk:
+            st.info(f"📌 Último día del importador (**{ultima_col_buk}**) → **D** (Descanso) para todos. Los días sin turno asignado → **L** (Libre).")
+        
         if turnos_no_encontrados:
             st.error(f"🚨 {len(turnos_no_encontrados)} formatos de turno no se pudieron codificar:")
             for t in sorted(turnos_no_encontrados):
