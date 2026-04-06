@@ -151,7 +151,7 @@ def parsear_hoja_turnos(df, nombre_hoja):
             continue
         break
     
-    # Determinar rol a partir del nombre de la hoja
+    # Determinar rol y mes a partir del nombre de la hoja
     nombre_upper = nombre_hoja.upper()
     if 'ANFITRION' in nombre_upper:
         rol = 'ANFITRION'
@@ -164,13 +164,30 @@ def parsear_hoja_turnos(df, nombre_hoja):
     else:
         rol = 'OTRO'
     
+    # Detectar mes del nombre de la hoja para tiebreaking de solapamientos
+    MESES_ES = {
+        'ENERO': 1, 'FEBRERO': 2, 'MARZO': 3, 'ABRIL': 4, 'MAYO': 5, 'JUNIO': 6,
+        'JULIO': 7, 'AGOSTO': 8, 'SEPTIEMBRE': 9, 'OCTUBRE': 10, 'NOVIEMBRE': 11, 'DICIEMBRE': 12
+    }
+    mes_hoja = None
+    for nombre_mes, num_mes in MESES_ES.items():
+        if nombre_mes in nombre_upper:
+            mes_hoja = num_mes
+            break
+    
     registros = []
     for i in range(fila_data, len(df)):
         nombre = df.iloc[i, 0]
         if pd.isna(nombre):
             continue
+        # Saltar filas con valores numéricos (filas de totales/resumen)
+        if isinstance(nombre, (int, float)):
+            continue
         nombre_str = str(nombre).strip()
         if nombre_str in ['.', '', 'nan', 'NaN']:
+            continue
+        # Debe contener al menos una letra
+        if not any(c.isalpha() for c in nombre_str):
             continue
         
         for col_idx, fecha_str in fechas.items():
@@ -179,7 +196,9 @@ def parsear_hoja_turnos(df, nombre_hoja):
                 'Nombre_Input': nombre_str,
                 'Fecha': fecha_str,
                 'Turno_Raw': turno_raw,
-                'Rol': rol
+                'Rol': rol,
+                'Hoja': nombre_hoja,
+                'Mes_Hoja': mes_hoja
             })
     
     return pd.DataFrame(registros)
@@ -351,30 +370,53 @@ archivo_buk = col2.file_uploader("📦 Importador BUK", type=["xls", "xlsx"], ke
 
 if archivo_360 and archivo_buk and st.session_state.etapa == 'carga':
     
-    # Detectar meses disponibles
     try:
         xls360 = pd.ExcelFile(archivo_360)
         hojas = xls360.sheet_names
         
-        # Extraer meses únicos de los nombres de hojas
-        meses_detectados = set()
-        for h in hojas:
-            partes = h.split()
-            if len(partes) >= 2:
-                meses_detectados.add(partes[-1])  # "Abril", "Marzo", etc.
-        
-        meses_detectados = sorted(meses_detectados)
-        
-        if not meses_detectados:
-            st.error("No se detectaron meses en los nombres de hojas del archivo 360.")
+        if not hojas:
+            st.error("El archivo 360 no tiene hojas.")
             st.stop()
         
-        mes_seleccionado = st.selectbox("📅 Selecciona el mes a procesar:", meses_detectados)
+        # Pre-escanear cada hoja para mostrar su rango de fechas
+        st.write("**Hojas detectadas en el archivo 360:**")
+        info_hojas = []
+        hojas_validas = []
+        for h in hojas:
+            df_tmp = pd.read_excel(xls360, sheet_name=h, header=None)
+            ff = detectar_fila_fechas(df_tmp)
+            if ff is None:
+                info_hojas.append(f"  ⚠️ `{h}` — sin formato de fechas reconocible (será omitida)")
+                continue
+            fechas_tmp = []
+            for j in range(1, df_tmp.shape[1]):
+                v = df_tmp.iloc[ff, j]
+                if isinstance(v, (datetime.datetime, pd.Timestamp)):
+                    fechas_tmp.append(pd.Timestamp(v))
+            if fechas_tmp:
+                rango = f"{min(fechas_tmp).strftime('%d-%m-%Y')} → {max(fechas_tmp).strftime('%d-%m-%Y')}"
+                info_hojas.append(f"  ✅ `{h}` — {rango} ({len(fechas_tmp)} días)")
+                hojas_validas.append(h)
         
-        hojas_del_mes = [h for h in hojas if mes_seleccionado.lower() in h.lower()]
+        for line in info_hojas:
+            st.markdown(line)
         
-        if hojas_del_mes:
-            st.write(f"Se procesarán las hojas: **{', '.join(hojas_del_mes)}**")
+        if not hojas_validas:
+            st.error("Ninguna hoja tiene un formato de fechas válido.")
+            st.stop()
+        
+        st.write("")
+        hojas_seleccionadas = st.multiselect(
+            "📋 Hojas a procesar (puedes seleccionar varias para cubrir rangos entre meses):",
+            options=hojas_validas,
+            default=hojas_validas
+        )
+        
+        st.caption("💡 Si una fecha aparece en varias hojas, se prefiere la hoja cuyo mes coincida con la fecha (ej: 1-abr se toma de 'Abril', no de 'Marzo').")
+        
+        if not hojas_seleccionadas:
+            st.warning("Selecciona al menos una hoja.")
+            st.stop()
         
         if st.button("🔍 Analizar y Procesar", type="primary"):
             with st.spinner("Leyendo y procesando datos..."):
@@ -383,8 +425,6 @@ if archivo_360 and archivo_buk and st.session_state.etapa == 'carga':
                 st.session_state.buk_bytes = archivo_buk.read()
                 archivo_buk.seek(0)
                 
-                # Intentar leer con el motor adecuado
-                # .xls → xlrd, .xlsx → openpyxl
                 buk_name = archivo_buk.name.lower()
                 if buk_name.endswith('.xls') and not buk_name.endswith('.xlsx'):
                     xls_buk = pd.ExcelFile(archivo_buk, engine='xlrd')
@@ -406,8 +446,6 @@ if archivo_360 and archivo_buk and st.session_state.etapa == 'carga':
                 nombres_buk = df_tc['Nombre del Colaborador'].tolist()
                 ruts_buk = df_tc['RUT'].tolist()
                 st.session_state.nombres_buk = nombres_buk
-                
-                # Crear mapa nombre→RUT
                 nombre_a_rut = dict(zip(nombres_buk, ruts_buk))
                 st.session_state.nombre_a_rut = nombre_a_rut
                 
@@ -416,9 +454,9 @@ if archivo_360 and archivo_buk and st.session_state.etapa == 'carga':
                 mapa_siglas = construir_mapa_siglas(df_ts_raw)
                 st.session_state.mapa_siglas = mapa_siglas
                 
-                # ── LEER TURNOS 360 ──
+                # ── LEER TURNOS 360 (TODAS LAS HOJAS SELECCIONADAS) ──
                 all_turnos = []
-                for hoja in hojas_del_mes:
+                for hoja in hojas_seleccionadas:
                     df_hoja = pd.read_excel(xls360, sheet_name=hoja, header=None)
                     df_parsed = parsear_hoja_turnos(df_hoja, hoja)
                     if not df_parsed.empty:
@@ -429,8 +467,28 @@ if archivo_360 and archivo_buk and st.session_state.etapa == 'carga':
                     st.stop()
                 
                 df_all = pd.concat(all_turnos, ignore_index=True)
+                
+                # ── RESOLUCIÓN DE SOLAPAMIENTOS ──
+                # Para (Nombre, Fecha, Rol) duplicados, preferir la hoja cuyo mes coincida
+                # con el mes de la fecha. Si ninguno coincide, tomar el primero.
+                df_all['_fecha_dt'] = pd.to_datetime(df_all['Fecha'])
+                df_all['_mes_fecha'] = df_all['_fecha_dt'].dt.month
+                df_all['_match_mes'] = (df_all['Mes_Hoja'] == df_all['_mes_fecha']).astype(int)
+                
+                # Ordenar: primero los que matchean mes (1), luego por hoja (estable)
+                df_all = df_all.sort_values(
+                    by=['Nombre_Input', 'Fecha', 'Rol', '_match_mes'],
+                    ascending=[True, True, True, False]
+                )
+                df_all = df_all.drop_duplicates(
+                    subset=['Nombre_Input', 'Fecha', 'Rol'],
+                    keep='first'
+                )
+                df_all = df_all.drop(columns=['_fecha_dt', '_mes_fecha', '_match_mes'])
+                df_all = df_all.reset_index(drop=True)
+                
                 st.session_state.df_all_turnos = df_all
-                st.session_state.hojas_mes = hojas_del_mes
+                st.session_state.hojas_mes = hojas_seleccionadas
                 
                 # ── MATCHING DE NOMBRES ──
                 nombres_input = df_all['Nombre_Input'].unique().tolist()
