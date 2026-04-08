@@ -666,15 +666,117 @@ if st.session_state.etapa == 'descarga':
                     # Fecha existe en BUK pero no en el 360 → L
                     df_output.at[idx, col_buk] = 'L'
         
-        # ── Mostrar Preview ──
-        st.subheader("Vista Previa")
+        # ── Análisis de estado por colaborador ──
+        # Clasifica cada fila como: OK / sin datos / con errores (REVISAR)
+        estado_filas = []
+        for idx, row_buk in df_output.iterrows():
+            rut = row_buk['RUT']
+            nombre = row_buk['Nombre del Colaborador']
+            area = row_buk.get('Área', '')
+            supervisor = row_buk.get('Supervisor', '')
+            turnos_colab = df_con_match[df_con_match['RUT'] == rut]
+            
+            # Contar errores REVISAR en la fila del output
+            n_revisar = 0
+            for fi, cb in fechas_buk.items():
+                val = df_output.at[idx, cb]
+                if isinstance(val, str) and val.startswith('REVISAR'):
+                    n_revisar += 1
+            
+            if turnos_colab.empty:
+                estado = "⚠️ Sin datos 360"
+                motivo = "no tiene registros en el archivo 360"
+            elif n_revisar > 0:
+                estado = f"🔴 {n_revisar} turnos con error"
+                motivo = f"{n_revisar} celdas con formato no reconocido"
+            else:
+                estado = "✅ OK"
+                motivo = f"{len(turnos_colab)} turnos cargados correctamente"
+            
+            estado_filas.append({
+                'idx_original': idx,
+                'RUT': rut,
+                'Nombre': nombre,
+                'Área': area,
+                'Supervisor': supervisor,
+                'Estado': estado,
+                'Detalle': motivo,
+            })
+        
+        df_estado = pd.DataFrame(estado_filas)
+        
+        # ── Panel de revisión y exclusión ──
+        st.subheader("📋 Revisión de Colaboradores")
+        st.caption("Marca los colaboradores que quieres **excluir** del archivo final. BUK permite reducir filas pero no columnas.")
+        
+        # Contadores rápidos
+        n_ok = (df_estado['Estado'].str.startswith('✅')).sum()
+        n_sin = (df_estado['Estado'].str.startswith('⚠️')).sum()
+        n_err = (df_estado['Estado'].str.startswith('🔴')).sum()
+        col_st1, col_st2, col_st3 = st.columns(3)
+        col_st1.metric("✅ OK", int(n_ok))
+        col_st2.metric("⚠️ Sin datos 360", int(n_sin))
+        col_st3.metric("🔴 Con errores", int(n_err))
+        
+        # Inicializar exclusiones en session_state
+        if 'ruts_excluidos' not in st.session_state:
+            st.session_state.ruts_excluidos = set()
+        
+        # Botones de acción rápida
+        col_b1, col_b2, col_b3 = st.columns(3)
+        if col_b1.button("Excluir 'Sin datos 360'"):
+            sin_datos = df_estado[df_estado['Estado'].str.startswith('⚠️')]['RUT'].tolist()
+            st.session_state.ruts_excluidos.update(sin_datos)
+            st.rerun()
+        if col_b2.button("Excluir 'Con errores'"):
+            con_err = df_estado[df_estado['Estado'].str.startswith('🔴')]['RUT'].tolist()
+            st.session_state.ruts_excluidos.update(con_err)
+            st.rerun()
+        if col_b3.button("Incluir todos"):
+            st.session_state.ruts_excluidos = set()
+            st.rerun()
+        
+        # Tabla editable con data_editor
+        df_tabla = df_estado[['RUT', 'Nombre', 'Área', 'Supervisor', 'Estado', 'Detalle']].copy()
+        df_tabla.insert(0, 'Excluir', df_tabla['RUT'].isin(st.session_state.ruts_excluidos))
+        
+        df_editada = st.data_editor(
+            df_tabla,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                'Excluir': st.column_config.CheckboxColumn('❌ Excluir', default=False, width="small"),
+                'RUT': st.column_config.TextColumn('RUT', disabled=True, width="small"),
+                'Nombre': st.column_config.TextColumn('Nombre', disabled=True),
+                'Área': st.column_config.TextColumn('Área', disabled=True, width="small"),
+                'Supervisor': st.column_config.TextColumn('Supervisor', disabled=True),
+                'Estado': st.column_config.TextColumn('Estado', disabled=True, width="small"),
+                'Detalle': st.column_config.TextColumn('Detalle', disabled=True),
+            },
+            key='editor_exclusion'
+        )
+        
+        # Actualizar exclusiones desde el editor
+        ruts_excluidos_actuales = set(df_editada[df_editada['Excluir']]['RUT'].tolist())
+        st.session_state.ruts_excluidos = ruts_excluidos_actuales
+        
+        if ruts_excluidos_actuales:
+            st.info(f"🗑️ Se excluirán **{len(ruts_excluidos_actuales)}** colaboradores del archivo final. Quedarán **{len(df_output) - len(ruts_excluidos_actuales)}** filas.")
+        
+        # Filtrar el df_output real
+        df_output_final = df_output[~df_output['RUT'].isin(ruts_excluidos_actuales)].copy().reset_index(drop=True)
+        
+        st.divider()
+        
+        # ── Vista Previa ──
+        st.subheader("Vista Previa del Archivo Final")
         
         # Mostrar solo las primeras columnas y algunas fechas
         cols_preview = ['Nombre del Colaborador', 'RUT']
         fecha_cols = [c for c in header_buk if c not in ['Nombre del Colaborador', 'RUT', 'Área', 'Supervisor'] and c is not None and not pd.isna(c)]
         cols_preview.extend(fecha_cols[:10])
-        cols_existentes = [c for c in cols_preview if c in df_output.columns]
-        st.dataframe(df_output[cols_existentes].head(15), use_container_width=True)
+        cols_existentes = [c for c in cols_preview if c in df_output_final.columns]
+        st.dataframe(df_output_final[cols_existentes].head(15), use_container_width=True)
         
         # ── Alertas ──
         if ultima_col_buk:
@@ -701,10 +803,6 @@ if st.session_state.etapa == 'descarga':
         col_s3.metric("Por revisar", int(celdas_revisar))
         
         # ── Generar archivo de salida ──
-        # Reconstruir con header
-        df_final = pd.DataFrame([header_buk], columns=header_buk)
-        df_final = pd.concat([df_final, df_output], ignore_index=True)
-        
         # Escribir como .xls
         output = io.BytesIO()
         try:
@@ -717,7 +815,7 @@ if st.session_state.etapa == 'descarga':
             for j, col_name in enumerate(header_buk):
                 ws1.write(0, j, col_name if col_name is not None else '')
             
-            for i, (_, row) in enumerate(df_output.iterrows()):
+            for i, (_, row) in enumerate(df_output_final.iterrows()):
                 for j, col_name in enumerate(header_buk):
                     val = row.get(col_name, '')
                     if pd.isna(val):
@@ -752,7 +850,7 @@ if st.session_state.etapa == 'descarga':
         except ImportError:
             # Fallback: usar openpyxl para xlsx
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_output.to_excel(writer, index=False, sheet_name='turnosColaboradores')
+                df_output_final.to_excel(writer, index=False, sheet_name='turnosColaboradores')
                 
                 # Copiar otras hojas
                 archivo_buk_bytes = st.session_state.buk_bytes
