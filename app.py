@@ -176,6 +176,7 @@ def parsear_hoja_turnos(df, nombre_hoja):
             break
     
     registros = []
+    PALABRAS_HEADER = {'NOMBRE', 'CARGO', 'SUPERVISOR', 'COLABORADOR', 'NOMBRE DEL COLABORADOR', 'TRABAJADOR', 'EMPLEADO', 'RUT'}
     for i in range(fila_data, len(df)):
         nombre = df.iloc[i, 0]
         if pd.isna(nombre):
@@ -188,6 +189,9 @@ def parsear_hoja_turnos(df, nombre_hoja):
             continue
         # Debe contener al menos una letra
         if not any(c.isalpha() for c in nombre_str):
+            continue
+        # Saltar palabras que son encabezados de columna (no son nombres reales)
+        if nombre_str.upper() in PALABRAS_HEADER:
             continue
         
         for col_idx, fecha_str in fechas.items():
