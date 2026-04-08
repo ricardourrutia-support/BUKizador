@@ -704,6 +704,18 @@ if st.session_state.etapa == 'descarga':
         # Si no hay problemas, marcar como aplicadas automáticamente
         if not problemas:
             st.session_state.correcciones_estado = 'aplicadas'
+        else:
+            # Si hay problemas nuevos (keys que no están en las resoluciones guardadas),
+            # volver a modo pendiente para que el usuario los resuelva
+            keys_actuales = {p['key'] for p in problemas}
+            keys_resueltas = set(st.session_state.resoluciones_problemas.keys())
+            keys_nuevas = keys_actuales - keys_resueltas
+            if keys_nuevas:
+                st.session_state.correcciones_estado = 'pendiente'
+            # También limpiar resoluciones obsoletas (de problemas que ya no existen)
+            keys_obsoletas = keys_resueltas - keys_actuales
+            for k in keys_obsoletas:
+                del st.session_state.resoluciones_problemas[k]
         
         # ── Panel de resolución de turnos problemáticos ──
         if problemas:
@@ -944,12 +956,6 @@ if st.session_state.etapa == 'descarga':
         # ── Alertas ──
         if ultima_col_buk:
             st.info(f"📌 Último día del importador (**{ultima_col_buk}**) → **D** (Descanso) para todos. Los días sin turno asignado → **L** (Libre).")
-        
-        if turnos_no_encontrados:
-            st.error(f"🚨 {len(turnos_no_encontrados)} formatos de turno no se pudieron codificar:")
-            for t in sorted(turnos_no_encontrados):
-                st.write(f"  • `{t}`")
-            st.write("Estos aparecen como 'REVISAR:...' en el archivo.")
         
         nombres_sin_match = set(df_all['Nombre_Input'].unique()) - set(mapa_nombres.keys())
         if nombres_sin_match:
