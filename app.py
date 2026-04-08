@@ -695,32 +695,37 @@ if st.session_state.etapa == 'descarga':
                         'col': cb,
                     })
         
-        # Inicializar resoluciones en session_state
+        # Inicializar resoluciones y estado en session_state
         if 'resoluciones_problemas' not in st.session_state:
             st.session_state.resoluciones_problemas = {}
+        if 'correcciones_estado' not in st.session_state:
+            st.session_state.correcciones_estado = 'pendiente'
+        
+        # Si no hay problemas, marcar como aplicadas automáticamente
+        if not problemas:
+            st.session_state.correcciones_estado = 'aplicadas'
         
         # ── Panel de resolución de turnos problemáticos ──
         if problemas:
             st.subheader("🚨 Turnos no codificados")
-            st.error(f"Se encontraron **{len(problemas)}** celdas con turnos que no existen en la base maestra de BUK. Debes resolver cada una antes de descargar.")
             
-            # Mostrar siglas disponibles para ayudar al usuario
-            siglas_disponibles = sorted(set(mapa_siglas.values()))
-            with st.expander(f"📖 Ver siglas disponibles en BUK ({len(siglas_disponibles)})"):
-                st.write(", ".join(f"`{s}`" for s in siglas_disponibles))
-                st.write("Siglas adicionales sin horario: `D` (Descanso), `F` (Festivo), `L` (Licencia/Libre), `P` (Permiso), `V` (Vacación), `C` (Compensado)")
-            
-            st.markdown("---")
-            
-            for i, p in enumerate(problemas):
-                key = p['key']
+            if st.session_state.correcciones_estado == 'pendiente':
+                # ─── Modo edición: mostrar panel y bloquear descarga ───
+                st.error(f"Se encontraron **{len(problemas)}** celdas con turnos que no existen en la base maestra de BUK. Debes resolver cada una antes de descargar.")
                 
-                # Box por problema
-                with st.container():
+                siglas_disponibles = sorted(set(mapa_siglas.values()))
+                with st.expander(f"📖 Ver siglas disponibles en BUK ({len(siglas_disponibles)})"):
+                    st.write(", ".join(f"`{s}`" for s in siglas_disponibles))
+                    st.write("Siglas adicionales sin horario: `D` (Descanso), `F` (Festivo), `L` (Licencia/Libre), `P` (Permiso), `V` (Vacación), `C` (Compensado)")
+                
+                st.markdown("---")
+                
+                for i, p in enumerate(problemas):
+                    key = p['key']
                     st.markdown(f"**{i+1}. {p['nombre']}** · {p['fecha_display']} · `{p['rol']}`")
                     st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;Turno reportado por el supervisor: **`{p['turno_raw']}`**")
                     
-                    accion = st.radio(
+                    st.radio(
                         "Acción:",
                         options=[
                             "🔧 (1) Actualizar la base de turnos en BUK [recomendado — no modifica este archivo]",
@@ -731,49 +736,92 @@ if st.session_state.etapa == 'descarga':
                         index=0,
                     )
                     
-                    if "(3)" in accion:
-                        sigla_manual = st.text_input(
-                            "Sigla a usar (ej: `ANFDIU1`, `L`, `D`):",
-                            key=f"sigla_{key}",
-                            placeholder="Escribe la sigla exacta como aparece en BUK"
-                        ).strip().upper()
-                        
-                        if sigla_manual:
-                            st.session_state.resoluciones_problemas[key] = {'tipo': 'manual', 'sigla': sigla_manual}
-                        else:
-                            st.session_state.resoluciones_problemas[key] = {'tipo': 'pendiente'}
-                    elif "(2)" in accion:
-                        st.session_state.resoluciones_problemas[key] = {'tipo': 'omitir'}
-                    else:  # (1)
-                        st.session_state.resoluciones_problemas[key] = {'tipo': 'bdmaestra'}
+                    st.text_input(
+                        "Sigla manual (solo si elegiste opción 3):",
+                        key=f"sigla_{key}",
+                        placeholder="Ej: ANFDIU1, L, D"
+                    )
                     
                     st.markdown("---")
-            
-            # Aplicar resoluciones a df_output
-            ruts_a_omitir_por_problema = set()
-            pendientes_sin_resolver = []
-            
-            for p in problemas:
-                res = st.session_state.resoluciones_problemas.get(p['key'], {'tipo': 'bdmaestra'})
                 
-                if res['tipo'] == 'manual':
-                    # Reemplazar la celda con la sigla manual
-                    df_output.at[p['idx'], p['col']] = res['sigla']
-                elif res['tipo'] == 'omitir':
-                    ruts_a_omitir_por_problema.add(p['rut'])
-                elif res['tipo'] == 'pendiente':
-                    pendientes_sin_resolver.append(p)
-                # Si es 'bdmaestra' → dejarlo como REVISAR: (se verá en el panel de exclusión)
+                # Botón de aplicar (gate)
+                if st.button("✅ Aplicar correcciones y continuar", type="primary", use_container_width=True):
+                    # Leer todos los estados de los widgets y persistir decisiones
+                    pendientes_msg = []
+                    nuevas_resoluciones = {}
+                    
+                    for p in problemas:
+                        key = p['key']
+                        accion_val = st.session_state.get(f"accion_{key}", "")
+                        sigla_val = str(st.session_state.get(f"sigla_{key}", "")).strip().upper()
+                        
+                        if "(3)" in accion_val:
+                            if sigla_val:
+                                nuevas_resoluciones[key] = {'tipo': 'manual', 'sigla': sigla_val}
+                            else:
+                                pendientes_msg.append(f"{p['nombre']} · {p['fecha_display']}")
+                        elif "(2)" in accion_val:
+                            nuevas_resoluciones[key] = {'tipo': 'omitir'}
+                        else:
+                            nuevas_resoluciones[key] = {'tipo': 'bdmaestra'}
+                    
+                    if pendientes_msg:
+                        st.warning(f"⏸️ Elegiste opción (3) pero no escribiste sigla para: **{', '.join(pendientes_msg)}**")
+                    else:
+                        st.session_state.resoluciones_problemas = nuevas_resoluciones
+                        st.session_state.correcciones_estado = 'aplicadas'
+                        st.rerun()
+                
+                # Bloquear el resto del flujo
+                st.stop()
             
-            if pendientes_sin_resolver:
-                st.warning(f"⏸️ Tienes **{len(pendientes_sin_resolver)}** problemas con acción (3) pero sin sigla ingresada. Complétalos antes de descargar.")
-            
-            # Pre-marcar para exclusión los RUTs de la opción (2)
-            if 'ruts_excluidos' not in st.session_state:
-                st.session_state.ruts_excluidos = set()
-            st.session_state.ruts_excluidos.update(ruts_a_omitir_por_problema)
-            
-            st.divider()
+            else:
+                # ─── Modo aplicadas: mostrar resumen y permitir re-editar ───
+                resumen_manual = []
+                resumen_omitir = []
+                resumen_bdm = []
+                
+                for p in problemas:
+                    res = st.session_state.resoluciones_problemas.get(p['key'], {'tipo': 'bdmaestra'})
+                    tipo = res['tipo']
+                    linea = f"**{p['nombre']}** · {p['fecha_display']} · `{p['turno_raw']}`"
+                    if tipo == 'manual':
+                        resumen_manual.append(f"{linea} → **`{res['sigla']}`**")
+                    elif tipo == 'omitir':
+                        resumen_omitir.append(linea)
+                    else:
+                        resumen_bdm.append(linea)
+                
+                st.success(f"✅ {len(problemas)} correcciones aplicadas")
+                
+                if resumen_manual:
+                    st.markdown("**✍️ Sigla manual asignada:**")
+                    for l in resumen_manual:
+                        st.markdown(f"- {l}")
+                if resumen_omitir:
+                    st.markdown("**🚫 Colaborador omitido del archivo:**")
+                    for l in resumen_omitir:
+                        st.markdown(f"- {l}")
+                if resumen_bdm:
+                    st.markdown("**🔧 Se mantiene como `REVISAR:...` (actualizar base BUK manualmente):**")
+                    for l in resumen_bdm:
+                        st.markdown(f"- {l}")
+                
+                if st.button("✏️ Editar correcciones"):
+                    st.session_state.correcciones_estado = 'pendiente'
+                    st.rerun()
+                
+                st.divider()
+        
+        # ── Aplicar resoluciones a df_output (siempre, si estado='aplicadas') ──
+        ruts_omitidos_por_problema = set()
+        for p in problemas:
+            res = st.session_state.resoluciones_problemas.get(p['key'], {'tipo': 'bdmaestra'})
+            if res['tipo'] == 'manual':
+                df_output.at[p['idx'], p['col']] = res['sigla']
+            elif res['tipo'] == 'omitir':
+                ruts_omitidos_por_problema.add(p['rut'])
+            # 'bdmaestra' → REVISAR: se queda en la celda
         
         # ── Análisis de estado por colaborador ──
         # Clasifica cada fila como: OK / sin datos / con errores (REVISAR)
@@ -866,14 +914,20 @@ if st.session_state.etapa == 'descarga':
         )
         
         # Actualizar exclusiones desde el editor
-        ruts_excluidos_actuales = set(df_editada[df_editada['Excluir']]['RUT'].tolist())
-        st.session_state.ruts_excluidos = ruts_excluidos_actuales
+        ruts_excluidos_manual = set(df_editada[df_editada['Excluir']]['RUT'].tolist())
+        st.session_state.ruts_excluidos = ruts_excluidos_manual
         
-        if ruts_excluidos_actuales:
-            st.info(f"🗑️ Se excluirán **{len(ruts_excluidos_actuales)}** colaboradores del archivo final. Quedarán **{len(df_output) - len(ruts_excluidos_actuales)}** filas.")
+        # El set final = exclusiones del editor ∪ omisiones del panel de problemas
+        ruts_excluidos_final = ruts_excluidos_manual | ruts_omitidos_por_problema
+        
+        if ruts_omitidos_por_problema:
+            st.caption(f"ℹ️ Además de los marcados arriba, se excluirán **{len(ruts_omitidos_por_problema)}** colaboradores por decisión del panel de turnos no codificados.")
+        
+        if ruts_excluidos_final:
+            st.info(f"🗑️ Se excluirán **{len(ruts_excluidos_final)}** colaboradores del archivo final. Quedarán **{len(df_output) - len(ruts_excluidos_final)}** filas.")
         
         # Filtrar el df_output real
-        df_output_final = df_output[~df_output['RUT'].isin(ruts_excluidos_actuales)].copy().reset_index(drop=True)
+        df_output_final = df_output[~df_output['RUT'].isin(ruts_excluidos_final)].copy().reset_index(drop=True)
         
         st.divider()
         
