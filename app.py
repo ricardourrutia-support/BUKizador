@@ -670,6 +670,111 @@ if st.session_state.etapa == 'descarga':
                     # Fecha existe en BUK pero no en el 360 → L
                     df_output.at[idx, col_buk] = 'L'
         
+        # ── Detección de turnos problemáticos ──
+        # Recorrer df_output buscando celdas REVISAR:... para construir lista de problemas
+        problemas = []
+        for idx, row_buk in df_output.iterrows():
+            rut = row_buk['RUT']
+            nombre = row_buk['Nombre del Colaborador']
+            for fi, cb in fechas_buk.items():
+                val = df_output.at[idx, cb]
+                if isinstance(val, str) and val.startswith('REVISAR:'):
+                    turno_raw = val.replace('REVISAR:', '', 1)
+                    # Buscar el rol desde df_con_match
+                    rol_rows = df_con_match[(df_con_match['RUT'] == rut) & (df_con_match['Fecha'] == fi)]
+                    rol = rol_rows.iloc[0]['Rol'] if not rol_rows.empty else 'N/A'
+                    problemas.append({
+                        'key': f"{rut}__{fi}",
+                        'rut': rut,
+                        'nombre': nombre,
+                        'fecha_iso': fi,
+                        'fecha_display': cb,
+                        'rol': rol,
+                        'turno_raw': turno_raw,
+                        'idx': idx,
+                        'col': cb,
+                    })
+        
+        # Inicializar resoluciones en session_state
+        if 'resoluciones_problemas' not in st.session_state:
+            st.session_state.resoluciones_problemas = {}
+        
+        # ── Panel de resolución de turnos problemáticos ──
+        if problemas:
+            st.subheader("🚨 Turnos no codificados")
+            st.error(f"Se encontraron **{len(problemas)}** celdas con turnos que no existen en la base maestra de BUK. Debes resolver cada una antes de descargar.")
+            
+            # Mostrar siglas disponibles para ayudar al usuario
+            siglas_disponibles = sorted(set(mapa_siglas.values()))
+            with st.expander(f"📖 Ver siglas disponibles en BUK ({len(siglas_disponibles)})"):
+                st.write(", ".join(f"`{s}`" for s in siglas_disponibles))
+                st.write("Siglas adicionales sin horario: `D` (Descanso), `F` (Festivo), `L` (Licencia/Libre), `P` (Permiso), `V` (Vacación), `C` (Compensado)")
+            
+            st.markdown("---")
+            
+            for i, p in enumerate(problemas):
+                key = p['key']
+                
+                # Box por problema
+                with st.container():
+                    st.markdown(f"**{i+1}. {p['nombre']}** · {p['fecha_display']} · `{p['rol']}`")
+                    st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;Turno reportado por el supervisor: **`{p['turno_raw']}`**")
+                    
+                    accion = st.radio(
+                        "Acción:",
+                        options=[
+                            "🔧 (1) Actualizar la base de turnos en BUK [recomendado — no modifica este archivo]",
+                            "🚫 (2) Omitir este colaborador del archivo final",
+                            "✍️ (3) Asignar una sigla manualmente para esta celda",
+                        ],
+                        key=f"accion_{key}",
+                        index=0,
+                    )
+                    
+                    if "(3)" in accion:
+                        sigla_manual = st.text_input(
+                            "Sigla a usar (ej: `ANFDIU1`, `L`, `D`):",
+                            key=f"sigla_{key}",
+                            placeholder="Escribe la sigla exacta como aparece en BUK"
+                        ).strip().upper()
+                        
+                        if sigla_manual:
+                            st.session_state.resoluciones_problemas[key] = {'tipo': 'manual', 'sigla': sigla_manual}
+                        else:
+                            st.session_state.resoluciones_problemas[key] = {'tipo': 'pendiente'}
+                    elif "(2)" in accion:
+                        st.session_state.resoluciones_problemas[key] = {'tipo': 'omitir'}
+                    else:  # (1)
+                        st.session_state.resoluciones_problemas[key] = {'tipo': 'bdmaestra'}
+                    
+                    st.markdown("---")
+            
+            # Aplicar resoluciones a df_output
+            ruts_a_omitir_por_problema = set()
+            pendientes_sin_resolver = []
+            
+            for p in problemas:
+                res = st.session_state.resoluciones_problemas.get(p['key'], {'tipo': 'bdmaestra'})
+                
+                if res['tipo'] == 'manual':
+                    # Reemplazar la celda con la sigla manual
+                    df_output.at[p['idx'], p['col']] = res['sigla']
+                elif res['tipo'] == 'omitir':
+                    ruts_a_omitir_por_problema.add(p['rut'])
+                elif res['tipo'] == 'pendiente':
+                    pendientes_sin_resolver.append(p)
+                # Si es 'bdmaestra' → dejarlo como REVISAR: (se verá en el panel de exclusión)
+            
+            if pendientes_sin_resolver:
+                st.warning(f"⏸️ Tienes **{len(pendientes_sin_resolver)}** problemas con acción (3) pero sin sigla ingresada. Complétalos antes de descargar.")
+            
+            # Pre-marcar para exclusión los RUTs de la opción (2)
+            if 'ruts_excluidos' not in st.session_state:
+                st.session_state.ruts_excluidos = set()
+            st.session_state.ruts_excluidos.update(ruts_a_omitir_por_problema)
+            
+            st.divider()
+        
         # ── Análisis de estado por colaborador ──
         # Clasifica cada fila como: OK / sin datos / con errores (REVISAR)
         estado_filas = []
