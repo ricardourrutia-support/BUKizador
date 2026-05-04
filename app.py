@@ -260,13 +260,42 @@ def construir_mapa_siglas(df_turnos_semanales):
 
 def turno_a_sigla(turno_raw, rol, mapa_siglas):
     """Convierte un turno en texto humano a su sigla BUK."""
+    if pd.isna(turno_raw):
+        return None
+    
+    texto = str(turno_raw).strip().upper()
+    if texto in ['', 'NAN']:
+        return None
+    
+    # ── Palabras clave → sigla directa (antes de intentar parsear horarios) ──
+    # Se busca si la palabra aparece contenida en el texto del supervisor.
+    # Orden importa: las más específicas primero.
+    KEYWORDS_SIGLA = [
+        ('VACACION',   'V'),   # Vacación, Vacaciones
+        ('PERMISO',    'P'),   # Permiso
+        ('COMPENSADO', 'C'),   # Compensado
+        ('FESTIVO',    'F'),   # Festivo
+        ('FERIADO',    'F'),   # Feriado
+        ('LICENCIA',   'L'),   # Licencia → se trata aparte en BUK, dejamos L
+        ('LIBRE',      'L'),   # Libre
+        ('DESCANSO',   'L'),   # Descanso → tratamos como Libre
+    ]
+    
+    # Normalizar: quitar acentos para comparar
+    texto_norm = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
+    
+    for keyword, sigla in KEYWORDS_SIGLA:
+        if keyword in texto_norm:
+            return sigla
+    
+    # ── Si no es palabra clave, intentar parsear como rango horario ──
     rango = extraer_rango_horario(turno_raw)
     
     if rango is None:
-        return None  # Celda vacía o no parseable
+        return None  # No parseable
     
     if rango == ('LIBRE', 'LIBRE'):
-        return 'L'  # Libre
+        return 'L'  # Fallback por si extraer_rango lo detecta
     
     entrada, salida = rango
     
